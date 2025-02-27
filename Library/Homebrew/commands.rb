@@ -41,6 +41,11 @@ module Commands
     require?(HOMEBREW_DEV_CMD_PATH/cmd)
   end
 
+  def self.valid_ruby_cmd?(cmd)
+    (valid_internal_cmd?(cmd) || valid_internal_dev_cmd?(cmd) || external_ruby_v2_cmd_path(cmd)) &&
+      Homebrew::AbstractCommand.command(cmd)&.ruby_cmd?
+  end
+
   def self.method_name(cmd)
     cmd.to_s
        .tr("-", "_")
@@ -194,7 +199,7 @@ module Commands
     return if path.blank?
 
     if (cmd_parser = Homebrew::CLI::Parser.from_cmd_path(path))
-      cmd_parser.processed_options.filter_map do |short, long, _, desc, hidden|
+      cmd_parser.processed_options.filter_map do |short, long, desc, hidden|
         next if hidden
 
         [long || short, desc]

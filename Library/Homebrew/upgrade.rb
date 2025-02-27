@@ -11,13 +11,10 @@ require "utils/topological_hash"
 module Homebrew
   # Helper functions for upgrading formulae.
   module Upgrade
-    module_function
-
-    def upgrade_formulae(
+    def self.upgrade_formulae(
       formulae_to_install,
       flags:,
       dry_run: false,
-      installed_on_request: false,
       force_bottle: false,
       build_from_source_formulae: [],
       dependents: false,
@@ -57,7 +54,6 @@ module Homebrew
           fi = create_formula_installer(
             formula,
             flags:,
-            installed_on_request:,
             force_bottle:,
             build_from_source_formulae:,
             interactive:,
@@ -97,13 +93,13 @@ module Homebrew
       end
     end
 
-    def outdated_kegs(formula)
+    private_class_method def self.outdated_kegs(formula)
       [formula, *formula.old_installed_formulae].map(&:linked_keg)
                                                 .select(&:directory?)
                                                 .map { |k| Keg.new(k.resolved_path) }
     end
 
-    def print_upgrade_message(formula, fi_options)
+    private_class_method def self.print_upgrade_message(formula, fi_options)
       version_upgrade = if formula.optlinked?
         "#{Keg.new(formula.opt_prefix).version} -> #{formula.pkg_version}"
       else
@@ -113,10 +109,9 @@ module Homebrew
       puts "  #{version_upgrade} #{fi_options.to_a.join(" ")}"
     end
 
-    def create_formula_installer(
+    private_class_method def self.create_formula_installer(
       formula,
       flags:,
-      installed_on_request: false,
       force_bottle: false,
       build_from_source_formulae: [],
       interactive: false,
@@ -128,15 +123,23 @@ module Homebrew
       quiet: false,
       verbose: false
     )
-      if formula.opt_prefix.directory?
-        keg = Keg.new(formula.opt_prefix.resolved_path)
-        keg_had_linked_opt = true
-        keg_was_linked = keg.linked?
+      keg = if formula.optlinked?
+        Keg.new(formula.opt_prefix.resolved_path)
+      else
+        formula.installed_kegs.find(&:optlinked?)
       end
 
-      if formula.opt_prefix.directory?
-        keg = Keg.new(formula.opt_prefix.resolved_path)
+      if keg
         tab = keg.tab
+        link_keg = keg.linked?
+        installed_as_dependency = tab.installed_as_dependency == true
+        installed_on_request = tab.installed_on_request == true
+        build_bottle = tab.built_bottle?
+      else
+        link_keg = nil
+        installed_as_dependency = false
+        installed_on_request = true
+        build_bottle = false
       end
 
       build_options = BuildOptions.new(Options.create(flags), formula.options)
@@ -148,10 +151,10 @@ module Homebrew
         formula,
         **{
           options:,
-          link_keg:                   keg_had_linked_opt ? keg_was_linked : nil,
-          installed_as_dependency:    tab&.installed_as_dependency,
-          installed_on_request:       installed_on_request || tab&.installed_on_request,
-          build_bottle:               tab&.built_bottle?,
+          link_keg:,
+          installed_as_dependency:,
+          installed_on_request:,
+          build_bottle:,
           force_bottle:,
           build_from_source_formulae:,
           interactive:,
@@ -165,9 +168,8 @@ module Homebrew
         }.compact,
       )
     end
-    private_class_method :create_formula_installer
 
-    def upgrade_formula(formula_installer, dry_run: false, verbose: false)
+    def self.upgrade_formula(formula_installer, dry_run: false, verbose: false)
       formula = formula_installer.formula
 
       if dry_run
@@ -188,9 +190,8 @@ module Homebrew
       puts
       Homebrew.failed = true
     end
-    private_class_method :upgrade_formula
 
-    def install_formula(formula_installer, upgrade:)
+    def self.install_formula(formula_installer, upgrade:)
       formula = formula_installer.formula
 
       formula_installer.check_installation_already_attempted
@@ -224,7 +225,7 @@ module Homebrew
       end
     end
 
-    def check_broken_dependents(installed_formulae)
+    private_class_method def self.check_broken_dependents(installed_formulae)
       CacheStoreDatabase.use(:linkage) do |db|
         installed_formulae.flat_map(&:runtime_installed_formula_dependents)
                           .uniq
@@ -249,7 +250,7 @@ module Homebrew
       @puts_no_installed_dependents_check_disable_message_if_not_already = true
     end
 
-    def check_installed_dependents(
+    def self.check_installed_dependents(
       formulae,
       flags:,
       dry_run: false,
@@ -342,7 +343,6 @@ module Homebrew
         upgrade_formulae(
           upgradeable_dependents,
           flags:,
-          installed_on_request:,
           force_bottle:,
           build_from_source_formulae:,
           dependents:                 true,
@@ -409,7 +409,7 @@ module Homebrew
       return if dry_run
 
       reinstallable_broken_dependents.each do |formula|
-        Homebrew.reinstall_formula(
+        Reinstall.reinstall_formula(
           formula,
           flags:,
           force_bottle:,
@@ -435,7 +435,7 @@ module Homebrew
       end
     end
 
-    def depends_on(one, two)
+    private_class_method def self.depends_on(one, two)
       if one.any_installed_keg
             &.runtime_dependencies
             &.any? { |dependency| dependency["full_name"] == two.full_name }
@@ -444,6 +444,5 @@ module Homebrew
         one <=> two
       end
     end
-    private_class_method :depends_on
   end
 end

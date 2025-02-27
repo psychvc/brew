@@ -1,4 +1,4 @@
-#!/bin/bash -p
+#!/bin/bash -pu
 set -u
 
 # Fail fast with concise message when not using bash
@@ -36,12 +36,6 @@ then
   exit 1
 fi
 
-# Reset sudo timestamp to avoid running unauthorized sudo commands
-if command -v sudo >/dev/null
-then
-  sudo --reset-timestamp 2>/dev/null || true
-fi
-
 quiet_cd() {
   CDPATH='' cd -- "$@" &>/dev/null || return
 }
@@ -62,6 +56,22 @@ do
   builtin enable "${cmd}"
 done
 unset cmd
+
+# Avoid picking up any random `sudo` in `PATH`.
+if [[ -x /usr/bin/sudo ]]
+then
+  SUDO=/usr/bin/sudo
+else
+  # Do this after ensuring we're using default Bash builtins.
+  SUDO="$(command -v sudo 2>/dev/null)"
+fi
+
+# Reset sudo timestamp to avoid running unauthorized sudo commands
+if [[ -n "${SUDO}" ]]
+then
+  "${SUDO}" --reset-timestamp 2>/dev/null || true
+fi
+unset SUDO
 
 # Take the HOMEBREW_PATH if we are running brew within brew, otherwise we would lose the original path.
 if [[ -n "${HOMEBREW_BREW_FILE:-}" && -n "${HOMEBREW_PATH:-}" ]]
@@ -106,6 +116,23 @@ unset BREW_FILE_DIRECTORY
 # keg_relocate.rb, formula_cellar_checks.rb, and test/global_spec.rb need to change.
 HOMEBREW_LIBRARY="${HOMEBREW_REPOSITORY}/Library"
 
+# Use HOMEBREW_BREW_WRAPPER if set.
+export HOMEBREW_ORIGINAL_BREW_FILE="${HOMEBREW_BREW_FILE}"
+if [[ -n "${HOMEBREW_BREW_WRAPPER:-}" ]]
+then
+  HOMEBREW_BREW_FILE="${HOMEBREW_BREW_WRAPPER}"
+fi
+
+# These variables are exported in this file and are not allowed to be overridden by the user.
+BIN_BREW_EXPORTED_VARS=(
+  HOMEBREW_BREW_FILE
+  HOMEBREW_PREFIX
+  HOMEBREW_REPOSITORY
+  HOMEBREW_LIBRARY
+  HOMEBREW_USER_CONFIG_HOME
+  HOMEBREW_ORIGINAL_BREW_FILE
+)
+
 # Load Homebrew's variable configuration files from disk.
 export_homebrew_env_file() {
   local env_file
@@ -116,17 +143,26 @@ export_homebrew_env_file() {
   do
     # only load HOMEBREW_* lines
     [[ "${line}" = "HOMEBREW_"* ]] || continue
+
+    # forbid overriding variables that are set in this file
+    local invalid_variable
+    for VAR in "${BIN_BREW_EXPORTED_VARS[@]}"
+    do
+      [[ "${line}" = "${VAR}"* ]] && invalid_variable="${VAR}"
+    done
+    [[ -n "${invalid_variable:-}" ]] && continue
+
     export "${line?}"
   done <"${env_file}"
 }
 
 # First, load the system-wide configuration.
+export_homebrew_env_file "/etc/homebrew/brew.env"
+
 unset SYSTEM_ENV_TAKES_PRIORITY
 if [[ -n "${HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY-}" ]]
 then
   SYSTEM_ENV_TAKES_PRIORITY="1"
-else
-  export_homebrew_env_file "/etc/homebrew/brew.env"
 fi
 
 # Next, load the prefix configuration
@@ -142,7 +178,7 @@ fi
 
 export_homebrew_env_file "${HOMEBREW_USER_CONFIG_HOME}/brew.env"
 
-# If the system configuration takes priority, load it last.
+# If the system configuration takes priority, load it again to override any previous settings.
 if [[ -n "${SYSTEM_ENV_TAKES_PRIORITY-}" ]]
 then
   export_homebrew_env_file "/etc/homebrew/brew.env"
@@ -183,6 +219,7 @@ USED_BY_HOMEBREW_VARS=(
   RBENV_ROOT
   SSH_TTY
   SUDO_USER
+  TMPDIR
   TMUX
   XDG_CACHE_HOME
   XDG_DATA_DIRS
@@ -201,11 +238,10 @@ done
 
 unset VAR VAR_NEW MANPAGE_VARS USED_BY_HOMEBREW_VARS
 
-export HOMEBREW_BREW_FILE
-export HOMEBREW_PREFIX
-export HOMEBREW_REPOSITORY
-export HOMEBREW_LIBRARY
-export HOMEBREW_USER_CONFIG_HOME
+for VAR in "${BIN_BREW_EXPORTED_VARS[@]}"
+do
+  export "${VAR?}"
+done
 
 # set from user environment
 # shellcheck disable=SC2154
@@ -258,6 +294,18 @@ then
     FILTERED_ENV+=("${VAR}=${!VAR}")
   done
 fi
+
+if [[ -n "${HOMEBREW_RDBG:-}" ]]
+then
+  for VAR in "${!RUBY_DEBUG_@}"
+  do
+    # Skip if variable value is empty.
+    [[ -z "${!VAR:-}" ]] && continue
+
+    FILTERED_ENV+=("${VAR}=${!VAR}")
+  done
+fi
+
 unset VAR ENV_VAR_NAMES
 
 exec /usr/bin/env -i "${FILTERED_ENV[@]}" /bin/bash -p "${HOMEBREW_LIBRARY}/Homebrew/brew.sh" "$@"

@@ -731,12 +731,10 @@ class Version
   def to_s = version.to_s
 
   sig { params(options: T.untyped).returns(String) }
-  def to_json(*options)
-    T.unsafe(version).to_json(*options)
-  end
+  def to_json(*options) = version.to_json(*options)
 
   sig { params(method: T.any(Symbol, String), include_all: T::Boolean).returns(T::Boolean) }
-  def respond_to?(method, include_all = T.unsafe(nil))
+  def respond_to?(method, include_all = false)
     return !null? if ["to_str", :to_str].include?(method)
 
     super
@@ -768,15 +766,15 @@ class Version
     )
   end
 
+  # Represents the absence of a version.
+  #
+  # NOTE: Constructor needs to called with an arbitrary non-empty version which is then set to `nil`.
+  NULL = T.let(Version.new("NULL").tap { |v| v.instance_variable_set(:@version, nil) }.freeze, Version)
+
   private
 
   sig { params(first: Integer, second: Integer).returns(Integer) }
   def max(first, second)
     (first > second) ? first : second
   end
-
-  # Represents the absence of a version.
-  #
-  # NOTE: Constructor needs to called with an arbitrary non-empty version which is then set to `nil`.
-  NULL = T.let(Version.new("NULL").tap { |v| v.instance_variable_set(:@version, nil) }.freeze, Version)
 end

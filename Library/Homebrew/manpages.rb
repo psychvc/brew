@@ -4,9 +4,6 @@
 require "cli/parser"
 require "erb"
 
-SOURCE_PATH = (HOMEBREW_LIBRARY_PATH/"manpages").freeze
-TARGET_MAN_PATH = (HOMEBREW_REPOSITORY/"manpages").freeze
-TARGET_DOC_PATH = (HOMEBREW_REPOSITORY/"docs").freeze
 module Homebrew
   # Helper functions for generating homebrew manual.
   module Manpages
@@ -24,6 +21,10 @@ module Homebrew
       :tsc,
       keyword_init: true,
     )
+
+    SOURCE_PATH = (HOMEBREW_LIBRARY_PATH/"manpages").freeze
+    TARGET_MAN_PATH = (HOMEBREW_REPOSITORY/"manpages").freeze
+    TARGET_DOC_PATH = (HOMEBREW_REPOSITORY/"docs").freeze
 
     def self.regenerate_man_pages(quiet:)
       require "kramdown"
@@ -96,9 +97,10 @@ module Homebrew
       man_page_lines.compact.join("\n")
     end
 
+    sig { params(cmd_parser: CLI::Parser).returns(T::Array[String]) }
     def self.cmd_parser_manpage_lines(cmd_parser)
       lines = [format_usage_banner(cmd_parser.usage_banner_text)]
-      lines += cmd_parser.processed_options.filter_map do |short, long, _, desc, hidden|
+      lines += cmd_parser.processed_options.filter_map do |short, long, desc, hidden|
         next if hidden
 
         if long.present?

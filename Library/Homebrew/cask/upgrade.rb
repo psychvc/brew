@@ -38,7 +38,6 @@ module Cask
       quarantine: nil,
       require_sha: nil
     )
-
       quarantine = true if quarantine.nil?
 
       greedy = true if Homebrew::EnvConfig.upgrade_greedy?
@@ -65,7 +64,9 @@ module Cask
       end
 
       manual_installer_casks = outdated_casks.select do |cask|
-        cask.artifacts.any?(Artifact::Installer::ManualInstaller)
+        cask.artifacts.any? do |artifact|
+          artifact.is_a?(Artifact::Installer) && artifact.manual_install
+        end
       end
 
       if manual_installer_casks.present?

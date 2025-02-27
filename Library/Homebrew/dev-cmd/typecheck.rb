@@ -39,11 +39,17 @@ module Homebrew
         conflicts "--lsp", "--update-all"
         conflicts "--lsp", "--fix"
 
-        named_args :none
+        named_args :tap
       end
 
       sig { override.void }
       def run
+        if (args.dir.present? || args.file.present?) && args.named.present?
+          raise UsageError, "Cannot use `--dir` or `--file` when specifying a tap."
+        elsif args.fix? && args.named.present?
+          raise UsageError, "Cannot use `--fix` when specifying a tap."
+        end
+
         update = args.update? || args.update_all?
         groups = update ? Homebrew.valid_gem_groups : ["typecheck"]
         Homebrew.install_bundler_gems!(groups:)
@@ -60,7 +66,6 @@ module Homebrew
 
             ohai "Updating Tapioca RBI files..."
             safe_system "bundle", "exec", "tapioca", "gem", *tapioca_args
-            safe_system "bundle", "exec", "parlour"
 
             if args.suggest_typed?
               ohai "Checking if we can bump Sorbet `typed` sigils..."
@@ -95,10 +100,11 @@ module Homebrew
           end
 
           srb_exec += ["--ignore", args.ignore] if args.ignore.present?
-          if args.file.present? || args.dir.present?
+          if args.file.present? || args.dir.present? || (tap_dir = args.named.to_paths(only: :tap).first).present?
             cd("sorbet") do
               srb_exec += ["--file", "../#{args.file}"] if args.file
               srb_exec += ["--dir", "../#{args.dir}"] if args.dir
+              srb_exec += ["--dir", tap_dir.to_s] if tap_dir
             end
           end
           success = system(*srb_exec)

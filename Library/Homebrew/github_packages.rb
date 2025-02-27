@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "utils/curl"
+require "utils/gzip"
 require "json"
 require "zlib"
 require "extend/hash/keys"
@@ -25,9 +26,6 @@ class GitHubPackages
   # https://github.com/opencontainers/distribution-spec/blob/main/spec.md#workflow-categories
   VALID_OCI_TAG_REGEX = /^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$/
   INVALID_OCI_TAG_CHARS_REGEX = /[^a-zA-Z0-9._-]/
-
-  GZIP_BUFFER_SIZE = 64 * 1024
-  private_constant :GZIP_BUFFER_SIZE
 
   # Translate Homebrew tab.arch to OCI platform.architecture
   TAB_ARCH_TO_PLATFORM_ARCHITECTURE = {
@@ -123,11 +121,11 @@ class GitHubPackages
   end
 
   def self.image_version_rebuild(version_rebuild)
-    return version_rebuild if version_rebuild.match?(VALID_OCI_TAG_REGEX)
+    unless version_rebuild.match?(VALID_OCI_TAG_REGEX)
+      raise ArgumentError, "GitHub Packages versions must match #{VALID_OCI_TAG_REGEX.source}!"
+    end
 
-    odisabled "GitHub Packages versions that do not match #{VALID_OCI_TAG_REGEX.source}",
-              "declaring a new `version` without these characters"
-    version_rebuild.gsub(INVALID_OCI_TAG_CHARS_REGEX, ".")
+    version_rebuild
   end
 
   private
@@ -138,6 +136,8 @@ class GitHubPackages
   IMAGE_MANIFEST_SCHEMA_URI = "https://opencontainers.org/schema/image/manifest"
 
   GITHUB_PACKAGE_TYPE = "homebrew_bottle"
+  private_constant :IMAGE_CONFIG_SCHEMA_URI, :IMAGE_INDEX_SCHEMA_URI, :IMAGE_LAYOUT_SCHEMA_URI,
+                   :IMAGE_MANIFEST_SCHEMA_URI, :GITHUB_PACKAGE_TYPE
 
   def load_schemas!
     schema_uri("content-descriptor",
@@ -171,7 +171,7 @@ class GitHubPackages
     # Going forward, this should probably be pinned to tags.
     # We currently use features newer than the last one (v1.0.2).
     url = "https://raw.githubusercontent.com/opencontainers/image-spec/170393e57ed656f7f81c3070bfa8c3346eaa0a5a/schema/#{basename}.json"
-    out, = Utils::Curl.curl_output(url)
+    out = Utils::Curl.curl_output(url).stdout
     json = JSON.parse(out)
 
     @schema_json ||= {}
@@ -262,6 +262,8 @@ class GitHubPackages
     # We run the preupload check twice to prevent TOCTOU bugs.
     result = preupload_check(user, token, skopeo, formula_full_name, bottle_hash,
                              keep_old:, dry_run:, warn_on_error:)
+    # Skip upload if preupload check returned early.
+    return if result.nil?
 
     formula_name, org, repo, version, rebuild, version_rebuild, image_name, image_uri, keep_old = *result
 
@@ -291,6 +293,7 @@ class GitHubPackages
       remote
     end
 
+    license = bottle_hash["formula"]["license"].to_s
     created_date = bottle_hash["bottle"]["date"]
     if keep_old
       index = JSON.parse((root/"index.json").read)
@@ -301,12 +304,20 @@ class GitHubPackages
       formula_annotations_hash = image_index["annotations"]
       manifests = image_index["manifests"]
     else
+      image_license = if license.length <= 256
+        license
+      else
+        # TODO: Consider generating a truncated license when over the limit
+        require "utils/spdx"
+        SPDX.license_expression_to_string(:cannot_represent)
+      end
+
       formula_annotations_hash = {
         "com.github.package.type"                => GITHUB_PACKAGE_TYPE,
         "org.opencontainers.image.created"       => created_date,
         "org.opencontainers.image.description"   => bottle_hash["formula"]["desc"],
         "org.opencontainers.image.documentation" => documentation,
-        "org.opencontainers.image.license"       => bottle_hash["formula"]["license"],
+        "org.opencontainers.image.licenses"      => image_license,
         "org.opencontainers.image.ref.name"      => version_rebuild,
         "org.opencontainers.image.revision"      => git_revision,
         "org.opencontainers.image.source"        => source,
@@ -341,7 +352,7 @@ class GitHubPackages
       tar_gz_sha256 = write_tar_gz(local_file, blobs)
 
       tab = tag_hash["tab"]
-      architecture = TAB_ARCH_TO_PLATFORM_ARCHITECTURE[tab["arch"].presence || bottle_tag.arch.to_s]
+      architecture = TAB_ARCH_TO_PLATFORM_ARCHITECTURE[tab["arch"].presence || bottle_tag.standardized_arch.to_s]
       raise TypeError, "unknown tab['arch']: #{tab["arch"]}" if architecture.blank?
 
       os = if tab["built_on"].present? && tab["built_on"]["os"].present?
@@ -362,7 +373,7 @@ class GitHubPackages
         os_version ||= OS::LINUX_CI_OS_VERSION
         glibc_version = tab["built_on"]["glibc_version"].presence if tab["built_on"].present?
         glibc_version ||= OS::LINUX_GLIBC_CI_VERSION
-        cpu_variant = tab["oldest_cpu_family"] || Hardware::CPU::INTEL_64BIT_OLDEST_CPU.to_s
+        cpu_variant = tab.dig("built_on", "oldest_cpu_family") || Hardware::CPU::INTEL_64BIT_OLDEST_CPU.to_s
       end
 
       platform_hash = {
@@ -373,7 +384,7 @@ class GitHubPackages
 
       tar_sha256 = Digest::SHA256.new
       Zlib::GzipReader.open(local_file) do |gz|
-        while (data = gz.read(GZIP_BUFFER_SIZE))
+        while (data = gz.read(Utils::Gzip::GZIP_BUFFER_SIZE))
           tar_sha256 << data
         end
       end
@@ -394,6 +405,8 @@ class GitHubPackages
         "sh.brew.bottle.digest"             => tar_gz_sha256,
         "sh.brew.bottle.glibc.version"      => glibc_version,
         "sh.brew.bottle.size"               => local_file_size.to_s,
+        "sh.brew.bottle.installed_size"     => tag_hash["installed_size"].to_s,
+        "sh.brew.license"                   => license,
         "sh.brew.tab"                       => tab.to_json,
         "sh.brew.path_exec_files"           => path_exec_files_string,
       }.compact_blank

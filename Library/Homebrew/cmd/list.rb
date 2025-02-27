@@ -41,6 +41,10 @@ module Homebrew
                description: "List the formulae installed on request."
         switch "--installed-as-dependency",
                description: "List the formulae installed as dependencies."
+        switch "--poured-from-bottle",
+               description: "List the formulae installed from a bottle."
+        switch "--built-from-source",
+               description: "List the formulae compiled from source."
 
         # passed through to ls
         switch "-1",
@@ -60,18 +64,18 @@ module Homebrew
         conflicts "--pinned", "--cask"
         conflicts "--multiple", "--cask"
         conflicts "--pinned", "--multiple"
-        ["--installed-on-request", "--installed-as-dependency"].each do |flag|
+        ["--installed-on-request", "--installed-as-dependency",
+         "--poured-from-bottle", "--built-from-source"].each do |flag|
           conflicts "--cask", flag
           conflicts "--versions", flag
           conflicts "--pinned", flag
+          conflicts "-l", flag
         end
         ["-1", "-l", "-r", "-t"].each do |flag|
           conflicts "--versions", flag
           conflicts "--pinned", flag
         end
-        ["--versions", "--pinned",
-         "---installed-on-request", "--installed-as-dependency",
-         "-l", "-r", "-t"].each do |flag|
+        ["--versions", "--pinned", "-l", "-r", "-t"].each do |flag|
           conflicts "--full-name", flag
         end
 
@@ -80,7 +84,9 @@ module Homebrew
 
       sig { override.void }
       def run
-        if args.full_name?
+        if args.full_name? &&
+           !(args.installed_on_request? || args.installed_as_dependency? ||
+             args.poured_from_bottle? || args.built_from_source?)
           unless args.cask?
             formula_names = args.no_named? ? Formula.installed : args.named.to_resolved_formulae
             full_formula_names = formula_names.map(&:full_name).sort(&tap_and_name_comparison)
@@ -104,26 +110,41 @@ module Homebrew
         elsif args.versions?
           filtered_list unless args.cask?
           list_casks if args.cask? || (!args.formula? && !args.multiple? && args.no_named?)
-        elsif args.installed_on_request? || args.installed_as_dependency?
-          unless args.no_named?
-            raise UsageError,
-                  "Cannot use `--installed-on-request` or " \
-                  "`--installed-as-dependency` with formula arguments."
-          end
+        elsif args.installed_on_request? ||
+              args.installed_as_dependency? ||
+              args.poured_from_bottle? ||
+              args.built_from_source?
+          flags = []
+          flags << "`--installed-on-request`" if args.installed_on_request?
+          flags << "`--installed-as-dependency`" if args.installed_as_dependency?
+          flags << "`--poured-from-bottle`" if args.poured_from_bottle?
+          flags << "`--built-from-source`" if args.built_from_source?
 
-          Formula.installed.sort.each do |formula|
+          raise UsageError, "Cannot use #{flags.join(", ")} with formula arguments." unless args.no_named?
+
+          formulae = if args.t?
+            Formula.installed.sort_by { |formula| test("M", formula.rack) }.reverse!
+          elsif args.full_name?
+            Formula.installed.sort { |a, b| tap_and_name_comparison.call(a.full_name, b.full_name) }
+          else
+            Formula.installed.sort
+          end
+          formulae.reverse! if args.r?
+          formulae.each do |formula|
             tab = Tab.for_formula(formula)
 
-            if args.installed_on_request? && args.installed_as_dependency?
-              statuses = []
-              statuses << "installed on request" if tab.installed_on_request
-              statuses << "installed as dependency" if tab.installed_as_dependency
-              next if statuses.empty?
+            statuses = []
+            statuses << "installed on request" if args.installed_on_request? && tab.installed_on_request
+            statuses << "installed as dependency" if args.installed_as_dependency? && tab.installed_as_dependency
+            statuses << "poured from bottle" if args.poured_from_bottle? && tab.poured_from_bottle
+            statuses << "built from source" if args.built_from_source? && !tab.poured_from_bottle
+            next if statuses.empty?
 
-              puts "#{formula.name}: #{statuses.join(", ")}"
-            elsif (args.installed_on_request? && tab.installed_on_request) ||
-                  (args.installed_as_dependency? && tab.installed_as_dependency)
-              puts formula.name
+            name = args.full_name? ? formula.full_name : formula.name
+            if flags.count > 1
+              puts "#{name}: #{statuses.join(", ")}"
+            else
+              puts name
             end
           end
         elsif args.no_named?
@@ -193,7 +214,15 @@ module Homebrew
       sig { void }
       def list_casks
         casks = if args.no_named?
-          Cask::Caskroom.casks
+          cask_paths = Cask::Caskroom.path.children.map do |path|
+            if path.symlink?
+              real_path = path.realpath
+              real_path.basename.to_s
+            else
+              path.basename.to_s
+            end
+          end.uniq.sort
+          cask_paths.map { |name| Cask::CaskLoader.load(name) }
         else
           filtered_args = args.named.dup.delete_if do |n|
             Homebrew.failed = true unless Cask::Caskroom.path.join(n).exist?
@@ -216,6 +245,7 @@ module Homebrew
     class PrettyListing
       sig { params(path: T.any(String, Pathname, Keg)).void }
       def initialize(path)
+        valid_lib_extensions = [".dylib", ".pc"]
         Pathname.new(path).children.sort_by { |p| p.to_s.downcase }.each do |pn|
           case pn.basename.to_s
           when "bin", "sbin"
@@ -223,7 +253,7 @@ module Homebrew
           when "lib"
             print_dir pn do |pnn|
               # dylibs have multiple symlinks and we don't care about them
-              (pnn.extname == ".dylib" || pnn.extname == ".pc") && !pnn.symlink?
+              valid_lib_extensions.include?(pnn.extname) && !pnn.symlink?
             end
           when ".brew"
             next # Ignore .brew
