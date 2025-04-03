@@ -4,7 +4,7 @@ last_review_date: "2025-02-08"
 
 # Documentation
 
-## Users
+## Users    
 
 - [`brew` manual page (command documentation)](Manpage.md)
 - [Homebrew Blog (news on major updates)](https://brew.sh/blog/)
